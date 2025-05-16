@@ -1,50 +1,43 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+# Toronto MCP Server: Toronto Open Data Tools
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers. 
+This project implements a Model Context Protocol (MCP) server for Toronto Open Data, deployable on Cloudflare Workers. It exposes a set of tools for querying and retrieving datasets from Toronto's CKAN-powered open data portal, making them accessible to MCP-compatible clients (like Claude Desktop or the Cloudflare AI Playground).
 
-## Get started: 
+## What does it do?
 
-[![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
+- **Provides a remote MCP server** exposing tools for Toronto's Open Data via the CKAN API.
+- **Lets you list, search, and fetch datasets and records** from Toronto's open data catalog.
+- **Easily extensible**: add more tools or data sources by editing `src/index.ts` and adding new tool modules.
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/sse`
+## Features
 
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
-```bash
-npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
-```
+- **list_datasets**: List all available datasets.
+- **search_datasets**: Search datasets by keyword.
+- **get_package**: Retrieve metadata for a dataset.
+- **get_first_datastore_resource_records**: Get records from the first active resource in a dataset.
+- **get_resource_records**: Get records from a specific resource.
 
-## Customizing your MCP Server
+## Tech Stack
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`. 
+- **Cloudflare Workers**: Serverless deployment platform.
+- **Model Context Protocol (MCP)**: Standard for tool-based AI integrations.
+- **TypeScript**: Type safety and modern JS features.
+- **Zod**: Input validation for tool parameters.
 
-## Connect to Cloudflare AI Playground
+## Project Structure
 
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
+- `src/index.ts`: Main entry point. Sets up the MCP server and registers available tools.
+- `src/ckanTools.ts`: Implements tools for accessing Toronto Open Data via CKAN API.
 
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/sse`)
-3. You can now use your MCP tools directly from the playground!
+## Usage
 
-## Connect Claude Desktop to your MCP server
+1. **Deploy to Cloudflare Workers** (see `wrangler.jsonc` for config). You can use `wrangler deploy` to deploy your own instance.
+2. **Connect from an MCP client** (e.g., Claude Desktop, Cloudflare AI Playground) using your Worker URL (e.g., `https://<your-worker>.workers.dev/sse`).
+3. **Use the tools**: List, search, and fetch Toronto Open Data directly from your AI client.
 
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote). 
+## Extending
 
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
+To add more tools, edit `src/index.ts` and register new tool modules. See `src/ckanTools.ts` for examples of tool definitions.
 
-Update with this configuration:
+---
 
-```json
-{
-  "mcpServers": {
-    "calculator": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://localhost:8787/sse"  // or remote-mcp-server-authless.your-account.workers.dev/sse
-      ]
-    }
-  }
-}
-```
-
-Restart Claude and you should see the tools become available. 
+_Originally based on the Cloudflare MCP server template, but focused on Toronto Open Data and CKAN tools._
