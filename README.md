@@ -38,6 +38,12 @@ This project implements a Model Context Protocol (MCP) server for Toronto Open D
 
 To add more tools, edit `src/index.ts` and register new tool modules. See `src/ckanTools.ts` for examples of tool definitions.
 
+## dspy/ (Python DSPy Server)
+
+This folder contains a Python-based server using the [dspy](https://github.com/stanfordnlp/dspy) package. It is designed to orchestrate tool calls to the MCP server (TypeScript) and provide a natural language interface for querying Toronto Open Data (CKAN) resources. The server exposes a simple chat API and can be extended for more advanced data analysis and visualization workflows.
+
+- To set up, see `dspy/README.md` for Python environment and usage instructions.
+
 ---
 
 _Originally based on the Cloudflare MCP server template, but focused on Toronto Open Data and CKAN tools._
