@@ -1,0 +1,7 @@
+dspy
+fastapi
+uvicorn
+httpx
+pandas
+openai
+python-dotenv 
