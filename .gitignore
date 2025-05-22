@@ -9,3 +9,4 @@ node_modules
 /dspy/__pycache__/
 /dspy/*.pyc
 /dspy/.DS_Store
+/dspy/.env
