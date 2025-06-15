@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "toronto-open-data": {
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-fetch",
+        "https://toronto-mcp.s-a62.workers.dev/sse"
+      ],
+      "env": {}
+    }
+  }
+}
