@@ -3,3 +3,10 @@ node_modules
 # wrangler files
 .wrangler
 .dev.vars*
+
+# Python virtual environments and bytecode
+/dspy/.venv/
+/dspy/__pycache__/
+/dspy/*.pyc
+/dspy/.DS_Store
+/dspy/.env

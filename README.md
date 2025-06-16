@@ -283,6 +283,12 @@ server.tool("new_analysis_tool", { param: z.string() }, async ({ param }) => {
 
 MIT License - see LICENSE file for details.
 
+## dspy/ (Python DSPy Server)
+
+This folder contains a Python-based server using the [dspy](https://github.com/stanfordnlp/dspy) package. It is designed to orchestrate tool calls to the MCP server (TypeScript) and provide a natural language interface for querying Toronto Open Data (CKAN) resources. The server exposes a simple chat API and can be extended for more advanced data analysis and visualization workflows.
+
+- To set up, see `dspy/README.md` for Python environment and usage instructions.
+
 ---
 
 **Built for intelligent open data discovery** • Powered by Toronto Open Data & CKAN API • Enhanced for AI assistant integration

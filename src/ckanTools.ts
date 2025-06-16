@@ -157,6 +157,7 @@ export function registerCkanTools(server: McpServer) {
 		{ packageId: z.string() },
 		async ({ packageId }: { packageId: string }) => {
 			const pkg = await fetchCkanPackage(packageId);
+
 			const dsResources = pkg.resources.filter((r: any) => r.datastore_active);
 			if (!dsResources.length) {
 				return {
