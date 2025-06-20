@@ -107,13 +107,9 @@ Create or edit `~/Library/Application Support/Claude/claude_desktop_config.json`
 ```json
 {
   "mcpServers": {
-    "toronto-open-data": {
+    "toronto-mcp": {
       "command": "npx",
-      "args": [
-        "@modelcontextprotocol/server-fetch",
-        "https://toronto-mcp.s-a62.workers.dev/sse"
-      ],
-      "env": {}
+      "args": ["mcp-remote", "https://toronto-mcp.s-a62.workers.dev/sse"]
     }
   }
 }
