@@ -12,11 +12,11 @@ export async function fetchCkanPackage(packageId: string): Promise<any> {
 }
 
 // Helper to fetch resource data
-export async function fetchCkanResource(resourceId: string): Promise<any> {
-	const url = `${CKAN_BASE}/datastore_search?id=${resourceId}`;
+export async function fetchCkanResource(resourceId: string, limit = 10): Promise<any> {
+	const url = `${CKAN_BASE}/datastore_search?id=${resourceId}&limit=${limit}`;
 	const resp = await fetch(url);
 	const json: any = await resp.json();
-	return json.result.records;
+	return json.result;
 }
 
 // Helper to list all datasets
@@ -139,23 +139,59 @@ function getUpdateFrequencyCategory(dataset: any): string {
 	return "unknown";
 }
 
+// Helper to create a compact package summary
+function createPackageSummary(pkg: any) {
+	return {
+		id: pkg.id,
+		name: pkg.name,
+		title: pkg.title,
+		description: pkg.notes?.substring(0, 200) + (pkg.notes?.length > 200 ? '...' : ''),
+		organization: pkg.organization?.title,
+		tags: pkg.tags?.map((tag: any) => tag.name).slice(0, 5) || [],
+		created: pkg.metadata_created,
+		last_modified: pkg.metadata_modified,
+		resource_count: pkg.resources?.length || 0,
+		datastore_resources: pkg.resources?.filter((r: any) => r.datastore_active).length || 0,
+		url: `https://open.toronto.ca/dataset/${pkg.name}/`
+	};
+}
+
+// Helper to create compact resource summary
+function createResourceSummary(resource: any) {
+	return {
+		id: resource.id,
+		name: resource.name,
+		format: resource.format,
+		size: resource.size,
+		datastore_active: resource.datastore_active,
+		last_modified: resource.last_modified
+	};
+}
+
 // Register CKAN tools on the given MCP server
 export function registerCkanTools(server: McpServer) {
 	server.tool(
 		"get_package",
-		{ packageId: z.string() },
-		async ({ packageId }: { packageId: string }) => {
+		{ 
+			packageId: z.string(),
+			summary: z.boolean().optional().default(true)
+		},
+		async ({ packageId, summary }: { packageId: string; summary?: boolean }) => {
 			const pkg = await fetchCkanPackage(packageId);
+			const result = summary ? createPackageSummary(pkg) : pkg;
 			return {
-				content: [{ type: "text", text: JSON.stringify(pkg, null, 2) }],
+				content: [{ type: "text", text: JSON.stringify(result) }],
 			};
 		},
 	);
 
 	server.tool(
 		"get_first_datastore_resource_records",
-		{ packageId: z.string() },
-		async ({ packageId }: { packageId: string }) => {
+		{ 
+			packageId: z.string(),
+			limit: z.number().optional().default(10)
+		},
+		async ({ packageId, limit }: { packageId: string; limit?: number }) => {
 			const pkg = await fetchCkanPackage(packageId);
 			const dsResources = pkg.resources.filter((r: any) => r.datastore_active);
 			if (!dsResources.length) {
@@ -163,37 +199,87 @@ export function registerCkanTools(server: McpServer) {
 					content: [{ type: "text", text: "No active datastore resources found." }],
 				};
 			}
-			const records = await fetchCkanResource(dsResources[0].id);
+			const result = await fetchCkanResource(dsResources[0].id, limit);
+			const summary = {
+				resource_id: dsResources[0].id,
+				resource_name: dsResources[0].name,
+				total_records: result.total,
+				returned_records: result.records.length,
+				fields: result.fields,
+				records: result.records
+			};
 			return {
-				content: [{ type: "text", text: JSON.stringify(records, null, 2) }],
+				content: [{ type: "text", text: JSON.stringify(summary) }],
 			};
 		},
 	);
 
 	server.tool(
 		"get_resource_records",
-		{ resourceId: z.string() },
-		async ({ resourceId }: { resourceId: string }) => {
-			const records = await fetchCkanResource(resourceId);
+		{ 
+			resourceId: z.string(),
+			limit: z.number().optional().default(10),
+			offset: z.number().optional().default(0)
+		},
+		async ({ resourceId, limit, offset }: { resourceId: string; limit?: number; offset?: number }) => {
+			const result = await fetchCkanResource(resourceId, limit || 10);
+			const summary = {
+				resource_id: resourceId,
+				total_records: result.total,
+				returned_records: result.records.length,
+				limit: limit,
+				offset: offset,
+				fields: result.fields,
+				records: result.records
+			};
 			return {
-				content: [{ type: "text", text: JSON.stringify(records, null, 2) }],
+				content: [{ type: "text", text: JSON.stringify(summary) }],
 			};
 		},
 	);
 
-	server.tool("list_datasets", {}, async () => {
-		const list = await fetchCkanPackageList();
-		return {
-			content: [{ type: "text", text: JSON.stringify(list, null, 2) }],
-		};
-	});
+	server.tool(
+		"list_datasets", 
+		{ 
+			limit: z.number().optional().default(50),
+			offset: z.number().optional().default(0)
+		}, 
+		async ({ limit, offset }: { limit?: number; offset?: number }) => {
+			const fullList = await fetchCkanPackageList();
+			const limitedList = fullList.slice(offset || 0, (offset || 0) + (limit || 50));
+			const summary = {
+				total_datasets: fullList.length,
+				returned_count: limitedList.length,
+				offset: offset || 0,
+				limit: limit || 50,
+				dataset_ids: limitedList
+			};
+			return {
+				content: [{ type: "text", text: JSON.stringify(summary) }],
+			};
+		}
+	);
 
-	server.tool("search_datasets", { query: z.string() }, async ({ query }: { query: string }) => {
-		const result = await fetchCkanPackageSearch(query);
-		return {
-			content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-		};
-	});
+	server.tool(
+		"search_datasets", 
+		{ 
+			query: z.string(),
+			limit: z.number().optional().default(20)
+		}, 
+		async ({ query, limit }: { query: string; limit?: number }) => {
+			const result = await fetchCkanPackageSearch(query);
+			const limitedResults = result.results.slice(0, limit || 20).map(createPackageSummary);
+			const summary = {
+				query,
+				total_found: result.count,
+				returned_count: limitedResults.length,
+				datasets: limitedResults
+			};
+			return {
+				content: [{ type: "text", text: JSON.stringify(summary) }],
+			};
+		}
+	);
 
 	// NEW ADVANCED TOOLS
 
@@ -246,7 +332,7 @@ export function registerCkanTools(server: McpServer) {
 			};
 
 			return {
-				content: [{ type: "text", text: JSON.stringify(analysis, null, 2) }],
+				content: [{ type: "text", text: JSON.stringify(analysis) }],
 			};
 		},
 	);
@@ -321,7 +407,7 @@ export function registerCkanTools(server: McpServer) {
 			}
 
 			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				content: [{ type: "text", text: JSON.stringify(result) }],
 			};
 		},
 	);
@@ -366,8 +452,8 @@ export function registerCkanTools(server: McpServer) {
 
 							// Get sample data if requested
 							if (includeDataPreview && (previewLimit || 0) > 0) {
-								const sampleData = await fetchCkanResource(resource.id);
-								resourceInfo.sample_data = sampleData.slice(0, previewLimit || 5);
+								const sampleResult = await fetchCkanResource(resource.id, previewLimit || 5);
+								resourceInfo.sample_data = sampleResult.records;
 							}
 						} catch (error) {
 							// If datastore query fails, mark as inactive
@@ -398,14 +484,14 @@ export function registerCkanTools(server: McpServer) {
 						0,
 					),
 				},
-				resources: resourceAnalysis,
-			};
+							resources: resourceAnalysis,
+		};
 
-			return {
-				content: [{ type: "text", text: JSON.stringify(analysis, null, 2) }],
-			};
-		},
-	);
+		return {
+			content: [{ type: "text", text: JSON.stringify(analysis) }],
+		};
+	},
+);
 
 	server.tool("get_data_categories", {}, async () => {
 		const [organizations, groups] = await Promise.all([
@@ -431,7 +517,7 @@ export function registerCkanTools(server: McpServer) {
 		};
 
 		return {
-			content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+			content: [{ type: "text", text: JSON.stringify(result) }],
 		};
 	});
 
@@ -550,9 +636,9 @@ export function registerCkanTools(server: McpServer) {
 				},
 			};
 
-			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-			};
+					return {
+			content: [{ type: "text", text: JSON.stringify(result) }],
+		};
 		},
 	);
 }
