@@ -1,285 +1,423 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-// CKAN API base URL for Toronto Open Data
-const CKAN_BASE = "https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action";
+import type {
+	CkanApiResponse,
+	CkanDatastoreResult,
+	CkanGroup,
+	CkanOrganization,
+	CkanPackage,
+	CkanResource,
+	CkanSearchResult,
+	CkanToolsConfig,
+	PackageSummary,
+	ResourceAnalysis,
+	ResourceSummary
+} from "./types.js";
 
-// Helper to fetch package metadata
-export async function fetchCkanPackage(packageId: string): Promise<any> {
-	const url = `${CKAN_BASE}/package_show?id=${packageId}`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Configuration constants
+const CONFIG: CkanToolsConfig = {
+  CKAN_BASE_URL: "https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action",
+  DEFAULT_SEARCH_ROWS: 100,
+  DEFAULT_PREVIEW_LIMIT: 5,
+  REQUEST_TIMEOUT: 10000,
+  RELEVANCE_WEIGHTS: {
+    TITLE: 10,
+    DESCRIPTION: 5,
+    TAGS: 3,
+    ORGANIZATION: 2,
+    RESOURCE: 1
+  },
+  FREQUENCY_THRESHOLDS: {
+    FREQUENT_DAYS: 7,
+    MONTHLY_DAYS: 30,
+    QUARTERLY_DAYS: 90
+  }
+} as const;
+
+// Improved API calling with error handling and timeout
+async function ckanApiCall<T>(endpoint: string): Promise<T> {
+  const url = `${CONFIG.CKAN_BASE_URL}/${endpoint}`;
+  
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
+      headers: { 
+        'Accept': 'application/json',
+        'User-Agent': 'Toronto-MCP-Server/1.0.0'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`CKAN API HTTP error: ${response.status} ${response.statusText}`);
+    }
+    
+    const json: CkanApiResponse<T> = await response.json();
+    
+    if (!json.success) {
+      throw new Error(`CKAN API error: ${json.error?.message || 'Unknown API error'}`);
+    }
+    
+    return json.result;
+  } catch (error) {
+    if (error instanceof Error) {
+      console.error(`CKAN API call failed for ${endpoint}:`, error.message);
+      throw new Error(`Failed to fetch from CKAN API: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
-// Helper to fetch resource data
-export async function fetchCkanResource(resourceId: string, limit = 10): Promise<any> {
-	const url = `${CKAN_BASE}/datastore_search?id=${resourceId}&limit=${limit}`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Helper function for tool responses (back to original working format)
+function createToolResponse(data: any) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }]
+  };
 }
 
-// Helper to list all datasets
-export async function fetchCkanPackageList(): Promise<any> {
-	const url = `${CKAN_BASE}/package_list`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Simplified and type-safe API functions
+export const fetchCkanPackage = (packageId: string): Promise<CkanPackage> =>
+  ckanApiCall(`package_show?id=${encodeURIComponent(packageId)}`);
+
+export const fetchCkanResource = (resourceId: string, limit = 10, offset = 0): Promise<CkanDatastoreResult> =>
+  ckanApiCall(`datastore_search?id=${encodeURIComponent(resourceId)}&limit=${limit}&offset=${offset}`);
+
+export const fetchCkanPackageList = (): Promise<string[]> =>
+  ckanApiCall('package_list');
+
+export const fetchCkanPackageSearch = (query: string): Promise<CkanSearchResult> =>
+  ckanApiCall(`package_search?q=${encodeURIComponent(query)}`);
+
+export const fetchCkanPackageSearchAdvanced = (
+  query: string,
+  rows = CONFIG.DEFAULT_SEARCH_ROWS,
+  facets: string[] = []
+): Promise<CkanSearchResult> => {
+  let endpoint = `package_search?q=${encodeURIComponent(query)}&rows=${rows}`;
+  if (facets.length > 0) {
+    endpoint += `&facet.field=${facets.map(f => encodeURIComponent(f)).join("&facet.field=")}`;
+  }
+  return ckanApiCall(endpoint);
+};
+
+export const fetchCkanOrganizations = (): Promise<CkanOrganization[]> =>
+  ckanApiCall('organization_list?all_fields=true');
+
+export const fetchCkanGroups = (): Promise<CkanGroup[]> =>
+  ckanApiCall('group_list?all_fields=true');
+
+export const fetchCkanResourceInfo = (resourceId: string): Promise<CkanResource> =>
+  ckanApiCall(`resource_show?id=${encodeURIComponent(resourceId)}`);
+
+export const fetchCkanDatastoreInfo = (resourceId: string): Promise<CkanDatastoreResult> =>
+  ckanApiCall(`datastore_search?id=${encodeURIComponent(resourceId)}&limit=0`);
+
+// Relevance scoring class
+class RelevanceScorer {
+  private static readonly WEIGHTS = CONFIG.RELEVANCE_WEIGHTS;
+  
+  static score(dataset: CkanPackage, query: string): number {
+    const lowerQuery = query.toLowerCase();
+    let score = 0;
+    
+    score += this.scoreTitle(dataset.title, lowerQuery);
+    score += this.scoreDescription(dataset.notes, lowerQuery);
+    score += this.scoreTags(dataset.tags, lowerQuery);
+    score += this.scoreOrganization(dataset.organization, lowerQuery);
+    score += this.scoreResources(dataset.resources, lowerQuery);
+    
+    return score;
+  }
+  
+  private static scoreTitle(title: string, query: string): number {
+    return title?.toLowerCase().includes(query) ? this.WEIGHTS.TITLE : 0;
+  }
+  
+  private static scoreDescription(description: string | undefined, query: string): number {
+    return description?.toLowerCase().includes(query) ? this.WEIGHTS.DESCRIPTION : 0;
+  }
+  
+  private static scoreTags(tags: { name: string }[], query: string): number {
+    return tags?.some(tag => tag.name.toLowerCase().includes(query)) ? this.WEIGHTS.TAGS : 0;
+  }
+  
+  private static scoreOrganization(organization: { title: string }, query: string): number {
+    return organization?.title?.toLowerCase().includes(query) ? this.WEIGHTS.ORGANIZATION : 0;
+  }
+  
+  private static scoreResources(resources: CkanResource[], query: string): number {
+    const hasMatch = resources?.some(resource => 
+      resource.name?.toLowerCase().includes(query) || 
+      resource.format?.toLowerCase().includes(query)
+    );
+    return hasMatch ? this.WEIGHTS.RESOURCE : 0;
+  }
 }
 
-// Helper to search datasets
-export async function fetchCkanPackageSearch(query: string): Promise<any> {
-	const url = `${CKAN_BASE}/package_search?q=${encodeURIComponent(query)}`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Update frequency analysis class
+class UpdateFrequencyAnalyzer {
+  private static readonly PATTERNS = {
+    daily: ['daily', 'real-time'],
+    weekly: ['weekly'],
+    monthly: ['monthly'],
+    quarterly: ['quarterly'],
+    annually: ['annual', 'yearly'],
+    irregular: ['irregular', 'as needed']
+  } as const;
+  
+  static categorize(dataset: CkanPackage): 
+    'daily' | 'weekly' | 'monthly' | 'quarterly' | 'annually' | 'irregular' | 'frequent' | 'infrequent' | 'unknown' {
+    const refreshRate = dataset.refresh_rate?.toLowerCase() || "";
+    
+    // Check explicit patterns first
+    for (const [category, patterns] of Object.entries(this.PATTERNS)) {
+      if (patterns.some(pattern => refreshRate.includes(pattern))) {
+        return category as any;
+      }
+    }
+    
+    // Infer from metadata if available
+    return this.inferFromMetadata(dataset);
+  }
+  
+  private static inferFromMetadata(dataset: CkanPackage): 
+    'frequent' | 'monthly' | 'quarterly' | 'infrequent' | 'unknown' {
+    const lastUpdate = dataset.maintainer_updated || dataset.metadata_modified;
+    if (!lastUpdate) return "unknown";
+    
+    const daysSince = this.daysSinceDate(lastUpdate);
+    const thresholds = CONFIG.FREQUENCY_THRESHOLDS;
+    
+    if (daysSince < thresholds.FREQUENT_DAYS) return "frequent";
+    if (daysSince < thresholds.MONTHLY_DAYS) return "monthly";
+    if (daysSince < thresholds.QUARTERLY_DAYS) return "quarterly";
+    return "infrequent";
+  }
+  
+  private static daysSinceDate(dateString: string): number {
+    const date = new Date(dateString);
+    const now = new Date();
+    return (now.getTime() - date.getTime()) / (1000 * 3600 * 24);
+  }
 }
 
-// Helper to get enhanced package search with filters
-export async function fetchCkanPackageSearchAdvanced(
-	query: string,
-	rows = 100,
-	facets: string[] = [],
-): Promise<any> {
-	let url = `${CKAN_BASE}/package_search?q=${encodeURIComponent(query)}&rows=${rows}`;
-	if (facets.length > 0) {
-		url += `&facet.field=${facets.join("&facet.field=")}`;
-	}
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Summary builder class
+class SummaryBuilder {
+  static package(pkg: CkanPackage): PackageSummary {
+    return {
+      id: pkg.id,
+      name: pkg.name,
+      title: pkg.title,
+      description: this.truncateDescription(pkg.notes),
+      organization: pkg.organization?.title || 'Unknown',
+      tags: pkg.tags?.map(tag => tag.name).slice(0, 5) || [],
+      created: pkg.metadata_created,
+      last_modified: pkg.metadata_modified,
+      resource_count: pkg.resources?.length || 0,
+      datastore_resources: this.countDatastoreResources(pkg.resources),
+      url: `https://open.toronto.ca/dataset/${pkg.name}/`
+    };
+  }
+  
+  static resource(resource: CkanResource): ResourceSummary {
+    return {
+      id: resource.id,
+      name: resource.name,
+      format: resource.format,
+      size: resource.size,
+      datastore_active: resource.datastore_active,
+      last_modified: resource.last_modified
+    };
+  }
+  
+  static resourceAnalysis(
+    resource: CkanResource, 
+    fields?: any[], 
+    recordCount?: number, 
+    sampleData?: Record<string, any>[]
+  ): ResourceAnalysis {
+    return {
+      ...this.resource(resource),
+      mimetype: resource.mimetype,
+      url: resource.url,
+      created: resource.created,
+      fields,
+      record_count: recordCount,
+      sample_data: sampleData
+    };
+  }
+  
+  private static truncateDescription(notes?: string): string {
+    if (!notes) return '';
+    const maxLength = 200;
+    return notes.length > maxLength 
+      ? notes.substring(0, maxLength) + '...' 
+      : notes;
+  }
+  
+  private static countDatastoreResources(resources?: CkanResource[]): number {
+    return resources?.filter(r => r.datastore_active).length || 0;
+  }
 }
 
-// Helper to get organizations
-export async function fetchCkanOrganizations(): Promise<any> {
-	const url = `${CKAN_BASE}/organization_list?all_fields=true`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+// Legacy functions for backward compatibility
+function analyzeDatasetRelevance(dataset: CkanPackage, query: string): number {
+  return RelevanceScorer.score(dataset, query);
 }
 
-// Helper to get groups/topics
-export async function fetchCkanGroups(): Promise<any> {
-	const url = `${CKAN_BASE}/group_list?all_fields=true`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+function getUpdateFrequencyCategory(dataset: CkanPackage): string {
+  return UpdateFrequencyAnalyzer.categorize(dataset);
 }
 
-// Helper to get resource info
-export async function fetchCkanResourceInfo(resourceId: string): Promise<any> {
-	const url = `${CKAN_BASE}/resource_show?id=${resourceId}`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
+function createPackageSummary(pkg: CkanPackage): PackageSummary {
+  return SummaryBuilder.package(pkg);
 }
 
-// Helper to get datastore info (fields, record count)
-export async function fetchCkanDatastoreInfo(resourceId: string): Promise<any> {
-	const url = `${CKAN_BASE}/datastore_search?id=${resourceId}&limit=0`;
-	const resp = await fetch(url);
-	const json: any = await resp.json();
-	return json.result;
-}
-
-// Function to analyze dataset relevance
-function analyzeDatasetRelevance(dataset: any, query: string): number {
-	const lowerQuery = query.toLowerCase();
-	let score = 0;
-
-	// Title match (highest weight)
-	if (dataset.title?.toLowerCase().includes(lowerQuery)) score += 10;
-
-	// Description match
-	if (dataset.notes?.toLowerCase().includes(lowerQuery)) score += 5;
-
-	// Tags match
-	if (dataset.tags?.some((tag: any) => tag.name.toLowerCase().includes(lowerQuery))) score += 3;
-
-	// Organization match
-	if (dataset.organization?.title?.toLowerCase().includes(lowerQuery)) score += 2;
-
-	// Resource format/name match
-	if (
-		dataset.resources?.some(
-			(res: any) =>
-				res.name?.toLowerCase().includes(lowerQuery) ||
-				res.format?.toLowerCase().includes(lowerQuery),
-		)
-	)
-		score += 1;
-
-	return score;
-}
-
-// Function to determine update frequency category
-function getUpdateFrequencyCategory(dataset: any): string {
-	const refreshRate = dataset.refresh_rate?.toLowerCase() || "";
-	const maintainedMetadata = dataset.maintainer_updated || dataset.metadata_modified;
-
-	if (refreshRate.includes("daily") || refreshRate.includes("real-time")) return "daily";
-	if (refreshRate.includes("weekly")) return "weekly";
-	if (refreshRate.includes("monthly")) return "monthly";
-	if (refreshRate.includes("quarterly")) return "quarterly";
-	if (refreshRate.includes("annual") || refreshRate.includes("yearly")) return "annually";
-	if (refreshRate.includes("irregular") || refreshRate.includes("as needed")) return "irregular";
-
-	// Try to infer from metadata updates if available
-	if (maintainedMetadata) {
-		const lastUpdate = new Date(maintainedMetadata);
-		const now = new Date();
-		const daysSinceUpdate = (now.getTime() - lastUpdate.getTime()) / (1000 * 3600 * 24);
-
-		if (daysSinceUpdate < 7) return "frequent";
-		if (daysSinceUpdate < 30) return "monthly";
-		if (daysSinceUpdate < 90) return "quarterly";
-		return "infrequent";
-	}
-
-	return "unknown";
-}
-
-// Helper to create a compact package summary
-function createPackageSummary(pkg: any) {
-	return {
-		id: pkg.id,
-		name: pkg.name,
-		title: pkg.title,
-		description: pkg.notes?.substring(0, 200) + (pkg.notes?.length > 200 ? '...' : ''),
-		organization: pkg.organization?.title,
-		tags: pkg.tags?.map((tag: any) => tag.name).slice(0, 5) || [],
-		created: pkg.metadata_created,
-		last_modified: pkg.metadata_modified,
-		resource_count: pkg.resources?.length || 0,
-		datastore_resources: pkg.resources?.filter((r: any) => r.datastore_active).length || 0,
-		url: `https://open.toronto.ca/dataset/${pkg.name}/`
-	};
-}
-
-// Helper to create compact resource summary
-function createResourceSummary(resource: any) {
-	return {
-		id: resource.id,
-		name: resource.name,
-		format: resource.format,
-		size: resource.size,
-		datastore_active: resource.datastore_active,
-		last_modified: resource.last_modified
-	};
+function createResourceSummary(resource: CkanResource): ResourceSummary {
+  return SummaryBuilder.resource(resource);
 }
 
 // Register CKAN tools on the given MCP server
 export function registerCkanTools(server: McpServer) {
-	server.tool(
-		"get_package",
-		{ 
-			packageId: z.string(),
-			summary: z.boolean().optional().default(true)
-		},
-		async ({ packageId, summary }: { packageId: string; summary?: boolean }) => {
-			const pkg = await fetchCkanPackage(packageId);
-			const result = summary ? createPackageSummary(pkg) : pkg;
-			return {
-				content: [{ type: "text", text: JSON.stringify(result) }],
-			};
-		},
-	);
+  // Basic tools with improved error handling and types
+  server.tool(
+    "get_package",
+    { 
+      packageId: z.string(),
+      summary: z.boolean().optional().default(true)
+    },
+    async ({ packageId, summary }: { packageId: string; summary?: boolean }) => {
+      try {
+        const pkg = await fetchCkanPackage(packageId);
+        const result = summary ? createPackageSummary(pkg) : pkg;
+        return createToolResponse(result);
+      } catch (error) {
+        console.error(`Error in get_package:`, error);
+        return createToolResponse({ 
+          error: `Failed to fetch package: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        });
+      }
+    },
+  );
 
-	server.tool(
-		"get_first_datastore_resource_records",
-		{ 
-			packageId: z.string(),
-			limit: z.number().optional().default(10)
-		},
-		async ({ packageId, limit }: { packageId: string; limit?: number }) => {
-			const pkg = await fetchCkanPackage(packageId);
-			const dsResources = pkg.resources.filter((r: any) => r.datastore_active);
-			if (!dsResources.length) {
-				return {
-					content: [{ type: "text", text: "No active datastore resources found." }],
-				};
-			}
-			const result = await fetchCkanResource(dsResources[0].id, limit);
-			const summary = {
-				resource_id: dsResources[0].id,
-				resource_name: dsResources[0].name,
-				total_records: result.total,
-				returned_records: result.records.length,
-				fields: result.fields,
-				records: result.records
-			};
-			return {
-				content: [{ type: "text", text: JSON.stringify(summary) }],
-			};
-		},
-	);
+  server.tool(
+    "get_first_datastore_resource_records",
+    { 
+      packageId: z.string(),
+      limit: z.number().optional().default(10)
+    },
+    async ({ packageId, limit }: { packageId: string; limit?: number }) => {
+      try {
+        const pkg = await fetchCkanPackage(packageId);
+        const dsResources = pkg.resources.filter(r => r.datastore_active);
+        
+        if (!dsResources.length) {
+          return createToolResponse({ message: "No active datastore resources found." });
+        }
+        
+        const result = await fetchCkanResource(dsResources[0].id, limit);
+        const summary = {
+          resource_id: dsResources[0].id,
+          resource_name: dsResources[0].name,
+          total_records: result.total,
+          returned_records: result.records.length,
+          fields: result.fields,
+          records: result.records
+        };
+        return createToolResponse(summary);
+      } catch (error) {
+        console.error(`Error in get_first_datastore_resource_records:`, error);
+        return createToolResponse({ 
+          error: `Failed to fetch resource records: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        });
+      }
+    },
+  );
 
-	server.tool(
-		"get_resource_records",
-		{ 
-			resourceId: z.string(),
-			limit: z.number().optional().default(10),
-			offset: z.number().optional().default(0)
-		},
-		async ({ resourceId, limit, offset }: { resourceId: string; limit?: number; offset?: number }) => {
-			const result = await fetchCkanResource(resourceId, limit || 10);
-			const summary = {
-				resource_id: resourceId,
-				total_records: result.total,
-				returned_records: result.records.length,
-				limit: limit,
-				offset: offset,
-				fields: result.fields,
-				records: result.records
-			};
-			return {
-				content: [{ type: "text", text: JSON.stringify(summary) }],
-			};
-		},
-	);
+  server.tool(
+    "get_resource_records",
+    { 
+      resourceId: z.string(),
+      limit: z.number().optional().default(10),
+      offset: z.number().optional().default(0)
+    },
+    async ({ resourceId, limit, offset }: { resourceId: string; limit?: number; offset?: number }) => {
+      try {
+        const result = await fetchCkanResource(resourceId, limit || 10, offset || 0);
+        const summary = {
+          resource_id: resourceId,
+          total_records: result.total,
+          returned_records: result.records.length,
+          limit: limit || 10,
+          offset: offset || 0,
+          fields: result.fields,
+          records: result.records
+        };
+        return createToolResponse(summary);
+      } catch (error) {
+        console.error(`Error in get_resource_records:`, error);
+        return createToolResponse({ 
+          error: `Failed to fetch resource records: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        });
+      }
+    },
+  );
 
-	server.tool(
-		"list_datasets", 
-		{ 
-			limit: z.number().optional().default(50),
-			offset: z.number().optional().default(0)
-		}, 
-		async ({ limit, offset }: { limit?: number; offset?: number }) => {
-			const fullList = await fetchCkanPackageList();
-			const limitedList = fullList.slice(offset || 0, (offset || 0) + (limit || 50));
-			const summary = {
-				total_datasets: fullList.length,
-				returned_count: limitedList.length,
-				offset: offset || 0,
-				limit: limit || 50,
-				dataset_ids: limitedList
-			};
-			return {
-				content: [{ type: "text", text: JSON.stringify(summary) }],
-			};
-		}
-	);
+  server.tool(
+    "list_datasets", 
+    { 
+      limit: z.number().optional().default(50),
+      offset: z.number().optional().default(0)
+    }, 
+    async ({ limit, offset }: { limit?: number; offset?: number }) => {
+      try {
+        const fullList = await fetchCkanPackageList();
+        const startIndex = offset || 0;
+        const endIndex = startIndex + (limit || 50);
+        const limitedList = fullList.slice(startIndex, endIndex);
+        
+        const summary = {
+          total_datasets: fullList.length,
+          returned_count: limitedList.length,
+          offset: startIndex,
+          limit: limit || 50,
+          dataset_ids: limitedList
+        };
+        return createToolResponse(summary);
+      } catch (error) {
+        console.error(`Error in list_datasets:`, error);
+        return createToolResponse({ 
+          error: `Failed to list datasets: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        });
+      }
+    }
+  );
 
-	server.tool(
-		"search_datasets", 
-		{ 
-			query: z.string(),
-			limit: z.number().optional().default(20)
-		}, 
-		async ({ query, limit }: { query: string; limit?: number }) => {
-			const result = await fetchCkanPackageSearch(query);
-			const limitedResults = result.results.slice(0, limit || 20).map(createPackageSummary);
-			const summary = {
-				query,
-				total_found: result.count,
-				returned_count: limitedResults.length,
-				datasets: limitedResults
-			};
-			return {
-				content: [{ type: "text", text: JSON.stringify(summary) }],
-			};
-		}
-	);
+  server.tool(
+    "search_datasets", 
+    { 
+      query: z.string(),
+      limit: z.number().optional().default(20)
+    }, 
+    async ({ query, limit }: { query: string; limit?: number }) => {
+      try {
+        const result = await fetchCkanPackageSearch(query);
+        const limitedResults = result.results.slice(0, limit || 20).map(createPackageSummary);
+        
+        const summary = {
+          query,
+          total_found: result.count,
+          returned_count: limitedResults.length,
+          datasets: limitedResults
+        };
+        return createToolResponse(summary);
+      } catch (error) {
+        console.error(`Error in search_datasets:`, error);
+        return createToolResponse({ 
+          error: `Failed to search datasets: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        });
+      }
+    }
+  );
 
 	// NEW ADVANCED TOOLS
 
