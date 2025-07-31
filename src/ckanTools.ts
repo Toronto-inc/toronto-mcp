@@ -425,7 +425,7 @@ export function registerCkanTools(server: McpServer) {
 		"find_relevant_datasets",
 		{
 			query: z.string(),
-			maxResults: z.number().optional().default(10),
+			maxResults: z.number().optional().default(20),
 			includeRelevanceScore: z.boolean().optional().default(true),
 		},
 		async ({
@@ -665,7 +665,7 @@ export function registerCkanTools(server: McpServer) {
 			query: z.string(),
 			includeUpdateFrequency: z.boolean().optional().default(true),
 			includeDataStructure: z.boolean().optional().default(true),
-			maxDatasets: z.number().optional().default(5),
+			maxDatasets: z.number().optional().default(20),
 		},
 		async ({
 			query,
